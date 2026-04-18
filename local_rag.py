@@ -42,7 +42,7 @@ class VectorDB:
             results = []
             for i, idx in enumerate(indices[0]):
                 if idx == -1: continue
-                if distances[0][i] < 0.3: continue 
+                if distances[0][i] < 0.2: continue 
                 results.append(self.metadata[idx])
             return results
         except Exception as e:
@@ -53,8 +53,10 @@ VECTOR_DB = VectorDB()
 
 @tool
 def search_knowledge_base(query: str) -> str:
-    """Search knowledge base and documents."""
-    results = VECTOR_DB.search(query, top_k=5)
+    """Search the local knowledge base, corporate documents, and research archives. 
+    Use this for ANY questions about specific projects, people (like Miriam Chickering), or technical documentation.
+    Provide a clear, specific query for the best results."""
+    results = VECTOR_DB.search(query, top_k=7)
     if not results: return "No relevant information found."
     formatted_results = []
     for res in results:
@@ -68,9 +70,15 @@ ollama_model = OllamaModel(host="http://localhost:11434", model_id=LLM_MODEL)
 agent = Agent(
     model=ollama_model,
     tools=[search_knowledge_base, calculator, current_time],
-    system_prompt="""You are Archivist AI, a precise technical librarian and research assistant. 
-Always start by calling 'search_knowledge_base' to gather facts.
-Refer to yourself as "Archivist AI" in your responses.
+    system_prompt="""You are Archivist AI, a precise technical librarian and research assistant.
+You have access to a vast corporate knowledge base. 
+
+FOLLOW THESE RULES STRICTLY:
+1. ALWAYS use the 'search_knowledge_base' tool if the user asks about ANY document, person, or technical topic.
+2. Even if you think you know the answer, verify it using the tools first to ensure accuracy.
+3. If the user mentions a specific file or name (e.g., "Miriam Chickering"), immediately search for that specific term.
+4. Your responses must be grounded in the facts retrieved from the tool. 
+5. Refer to yourself as "Archivist AI".
 
 VERY IMPORTANT: When providing code examples, ALWAYS use triple backticks with the language identifier 
 (e.g., ```python) and put each code block on its own line. Never write code as plain text."""

@@ -18,12 +18,17 @@ CHUNK_OVERLAP = 100
 def get_pdf_pages(path: str) -> List[Tuple[str, int]]:
     """Extract text from a PDF file, keeping track of page numbers."""
     try:
+        import re
         reader = PdfReader(path)
         pages = []
         for i, page in enumerate(reader.pages):
             text = page.extract_text()
             if text:
-                pages.append((text, i + 1))
+                # Clean up whitespace: replace multiple spaces/newlines with single ones
+                # This fixes the "fragmented text" issue found in some PDFs
+                text = re.sub(r'\s+', ' ', text).strip()
+                if text:
+                    pages.append((text, i + 1))
         return pages
     except Exception as e:
         print(f"Error reading PDF {path}: {e}")
@@ -70,6 +75,10 @@ def ingest():
     for doc in documents:
         chunks = splitter.split_text(doc['content'])
         for i, chunk in enumerate(chunks):
+            # Skip degenerate chunks (e.g. single page numbers or very short fragments)
+            if len(chunk.strip()) < 100:
+                continue
+
             chunks_metadata.append({
                 "source": doc['source'],
                 "type": doc['type'],
