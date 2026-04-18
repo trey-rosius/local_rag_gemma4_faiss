@@ -1,0 +1,7 @@
+.venv/
+__pycache__/
+docs/
+vector_store.faiss
+vector_store.json
+.gemini/
+.DS_Store

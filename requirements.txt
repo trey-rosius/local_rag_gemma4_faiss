@@ -1,0 +1,9 @@
+ollama
+numpy
+fastapi
+uvicorn
+python-multipart
+strands-agents[ollama]
+faiss-cpu
+pypdf
+langchain-text-splitters
