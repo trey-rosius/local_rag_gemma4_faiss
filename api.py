@@ -3,7 +3,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional
 import uvicorn
+import json
+import os
+import shutil
 import local_rag
+import durable_ingest
 
 app = FastAPI(title="Local AI RAG & Transcription API")
 
@@ -139,16 +143,113 @@ async def get_knowledge_base():
 @app.post("/ingest")
 async def ingest_endpoint():
     """
-    Trigger document re-scan and FAISS index update.
+    Trigger document re-scan and FAISS index update using a durable workflow.
+    Returns the workflow ID for progress tracking.
     """
     try:
-        import ingest_kb
-        count = ingest_kb.ingest()
-        local_rag.reload_vector_db()
-        return {"status": "success", "message": f"Successfully indexed {count} chunks."}
+        # Start the workflow asynchronously
+        handle = durable_ingest.dbos.start_workflow(durable_ingest.ingest_workflow)
+        return {"status": "success", "workflow_id": handle.workflow_id}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/ingest/status/{workflow_id}")
+def get_ingest_status(workflow_id: str):
+    """
+    Get the status and execution steps of a specific ingestion workflow.
+    """
+    try:
+        status = durable_ingest.dbos.get_workflow_status(workflow_id)
+        if not status:
+            return {"status": "not_found"}
+        
+        # If completed successfully, ensure local_rag reloads the index from disk
+        if status.status == "SUCCESS":
+            print(f"Workflow {workflow_id} successful. Reloading vector database...")
+            local_rag.reload_vector_db()
+
+        steps = durable_ingest.dbos.list_workflow_steps(workflow_id)
+        
+        # Format steps for frontend
+        formatted_steps = []
+        import json
+        for step in steps:
+            fn_name = step.get("function_name", "Unknown Step")
+            out_val = step.get("output", [])
+            
+            # Safe output for frontend to extract metadata but not blow up memory
+            safe_out = []
+            if out_val:
+                try:
+                    if isinstance(out_val, str):
+                        parsed = json.loads(out_val)
+                    else:
+                        parsed = out_val
+                        
+                    if fn_name == "process_single_document" and isinstance(parsed, list) and len(parsed) > 0:
+                        safe_out = [{"source": parsed[0].get("source", "Unknown")}]
+                except:
+                    pass
+
+            formatted_steps.append({
+                "name": fn_name,
+                "status": "COMPLETED" if not step.get("error") else "ERROR",
+                "output": safe_out
+            })
+
+        # Inject inferred running step if workflow is still progressing
+        if status.status == "PENDING":
+            expected_order = ['list_document_files', 'process_single_document', 'embed_batch', 'save_vector_store']
+            last_completed = formatted_steps[-1]["name"] if formatted_steps else None
+            
+            # Figure out what's next
+            if last_completed in expected_order:
+                idx = expected_order.index(last_completed)
+                # It could be we are looping with process_single_document or embed_batch,
+                # but if we are moving forward, we can just highlight the last completed as potentially still running logic,
+                # or add a dummy RUNNING state. The frontend accepts duplicate names in list.
+                # Actually, the simplest is to mark the last known step as RUNNING in frontend 
+                # if we have it, or add the next step as RUNNING.
+                # Since we don't know exactly, we'll append the next logical step as RUNNING.
+                if idx + 1 < len(expected_order) and last_completed not in ['process_single_document', 'embed_batch']:
+                    next_step = expected_order[idx + 1]
+                    formatted_steps.append({"name": next_step, "status": "RUNNING", "output": []})
+                else:
+                    # If it's a batching step, another instance of the same step is likely running
+                    formatted_steps.append({"name": last_completed, "status": "RUNNING", "output": formatted_steps[-1]["output"]})
+            elif not formatted_steps:
+                formatted_steps.append({"name": "list_document_files", "status": "RUNNING", "output": []})
+
+        return {
+            "workflow_id": workflow_id,
+            "status": status.status,
+            "steps": formatted_steps
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/upload")
+async def upload_documents(files: list[UploadFile] = File(...)):
+    """
+    Handle multiple file uploads and save them to the docs/ directory.
+    """
+    try:
+        if not os.path.exists("docs"):
+            os.makedirs("docs")
+            
+        saved_files = []
+        for file in files:
+            file_path = os.path.join("docs", file.filename)
+            with open(file_path, "wb") as buffer:
+                shutil.copyfileobj(file.file, buffer)
+            saved_files.append(file.filename)
+            
+        return {"status": "success", "message": f"Successfully uploaded: {', '.join(saved_files)}"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
+    # Launch DBOS for durable workflows
+    durable_ingest.dbos.launch()
     # Run the server
     uvicorn.run(app, host="0.0.0.0", port=8000)

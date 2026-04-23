@@ -7,3 +7,7 @@ strands-agents[ollama]
 faiss-cpu
 pypdf
 langchain-text-splitters
+dbos
+sqlalchemy
+psycopg2-binary
+
